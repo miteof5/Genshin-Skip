@@ -65,7 +65,10 @@ OCR_COOLDOWN = 3.0                    # 气泡出现后 OCR 一次，3 秒内不
 OCR_PAUSE_DURATION = 30.0             # 命中暂停关键词后静默 30 秒；气泡消失自动解除
 
 TALK_TEMPLATE = "disabled_ui.png"  # 对话界面 UI 资产（左上角）
-BASE_DIR = Path(__file__).resolve().parent
+# 打包后 _MEIPASS = 解压内部目录（内置资源：ui.html / assets 模板）
+# DATA_DIR = 可执行文件所在目录（外置数据：data\ 暂停词与日志、samples\ 自检截图）
+RES_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+DATA_DIR = Path(__file__).resolve().parent
 
 # ---------------------------- 管理员权限（UAC 提权） ----------------------------
 def ensure_admin() -> bool:
@@ -333,9 +336,9 @@ def detect_option(frame_bgr, option_matcher=None, excl_matcher=None):
 # ---------------------------- 主循环 ----------------------------
 class DialogSkipper:
     def __init__(self):
-        self.talk = TemplateMatcher(BASE_DIR / "assets" / TALK_TEMPLATE, TALK_THRESHOLD)
-        self.option_matcher = IconMultiMatcher(BASE_DIR / "assets" / OPTION_ICON_TEMPLATE, OPTION_ICON_THRESHOLD)
-        self.excl_matcher = IconMultiMatcher(BASE_DIR / "assets" / EXCLAMATION_TEMPLATE, OPTION_ICON_THRESHOLD)
+        self.talk = TemplateMatcher(RES_DIR / "assets" / TALK_TEMPLATE, TALK_THRESHOLD)
+        self.option_matcher = IconMultiMatcher(RES_DIR / "assets" / OPTION_ICON_TEMPLATE, OPTION_ICON_THRESHOLD)
+        self.excl_matcher = IconMultiMatcher(RES_DIR / "assets" / EXCLAMATION_TEMPLATE, OPTION_ICON_THRESHOLD)
         self.running = False
         self._stop = threading.Event()
         self._thread = None
@@ -351,7 +354,7 @@ class DialogSkipper:
         if self._pauses is None:
             kws = list(DEFAULT_PAUSE_KEYWORDS)
             try:
-                p = BASE_DIR / "data" / PAUSE_OPTIONS_FILE
+                p = DATA_DIR / "data" / PAUSE_OPTIONS_FILE
                 if p.exists():
                     extra = json.loads(p.read_text(encoding="utf-8"))
                     if isinstance(extra, list):
@@ -431,7 +434,7 @@ class DialogSkipper:
         用户看不到任何画面），loaded 后加样式/圆角并移到屏幕内 → 首帧即深色圆角面板，无白屏"""
         import webview
         win = webview.create_window(
-            "原神跳一跳", url=str(BASE_DIR / "ui.html"), width=184, height=88,
+            "原神跳一跳", url=str(RES_DIR / "ui.html"), width=184, height=88,
             x=-2000, y=-2000, frameless=True, easy_drag=False, on_top=True,
             js_api=self._UiApi(self))
         self._webview_window = win
@@ -534,7 +537,7 @@ class DialogSkipper:
         # 启动时清空旧的诊断图（diag 仅 debug 排查用，不留历史，避免积累占空间）
         if debug:
             try:
-                d = BASE_DIR / "data" / "diag"
+                d = DATA_DIR / "data" / "diag"
                 if d.exists():
                     for f in d.glob("*.png"):
                         f.unlink(missing_ok=True)
@@ -627,11 +630,11 @@ class DialogSkipper:
                 if debug and has_opt and time.time() - last_log >= 1.0:
                     last_log = time.time()
                     try:
-                        os.makedirs(BASE_DIR / "data" / "diag", exist_ok=True)
+                        os.makedirs(DATA_DIR / "data" / "diag", exist_ok=True)
                         anno = frame.copy()
                         for m in matches:
                             cv2.rectangle(anno, (m[0], m[1]), (m[0] + m[2], m[1] + m[3]), (0, 255, 0), 2)
-                        cv2.imwrite(str(BASE_DIR / "data" / "diag" / f"opt_{int(time.time())}.png"), anno)
+                        cv2.imwrite(str(DATA_DIR / "data" / "diag" / f"opt_{int(time.time())}.png"), anno)
                     except Exception:
                         pass
 
@@ -649,7 +652,7 @@ class DialogSkipper:
 # ---------------------------- 自检模式（不注入按键） ----------------------------
 def selfcheck():
     """用真实截图验证判定 + OCR 暂停关键词决策链。样本放在项目 samples\ 目录（4 张 1280x720 全屏截图）"""
-    samples_dir = BASE_DIR / "samples"
+    samples_dir = DATA_DIR / "samples"
     samples = [
         ("选项界面(应→点选项)", samples_dir / "option.png", "OPTION"),
         ("对话无选项(应→空格)", samples_dir / "talk.png", "TALK"),
@@ -665,10 +668,10 @@ def selfcheck():
         print("  pause.png   凯瑟琳每日委托奖励界面（多选项菜单）")
         print("放好后重新运行 --selfcheck")
         return 1
-    talk = TemplateMatcher(BASE_DIR / "assets" / TALK_TEMPLATE, TALK_THRESHOLD)
+    talk = TemplateMatcher(RES_DIR / "assets" / TALK_TEMPLATE, TALK_THRESHOLD)
     ok = True
-    opt_matcher = IconMultiMatcher(BASE_DIR / "assets" / OPTION_ICON_TEMPLATE, OPTION_ICON_THRESHOLD)
-    excl_matcher = IconMultiMatcher(BASE_DIR / "assets" / EXCLAMATION_TEMPLATE, OPTION_ICON_THRESHOLD)
+    opt_matcher = IconMultiMatcher(RES_DIR / "assets" / OPTION_ICON_TEMPLATE, OPTION_ICON_THRESHOLD)
+    excl_matcher = IconMultiMatcher(RES_DIR / "assets" / EXCLAMATION_TEMPLATE, OPTION_ICON_THRESHOLD)
     sk = DialogSkipper()
     for name, path, expect in samples:
         img = cv2.imread(str(path))
@@ -696,7 +699,7 @@ def selfcheck():
 
 if __name__ == "__main__":
     import traceback
-    LOG = BASE_DIR / "data" / "skip_debug.log"
+    LOG = DATA_DIR / "data" / "skip_debug.log"
     try:
         with open(LOG, "a", encoding="utf-8") as f:
             f.write(time.strftime("%Y-%m-%d %H:%M:%S")
