@@ -16,3 +16,6 @@ dist/
 *.tmp
 *_test.log
 *_test_err.log
+
+# 本地打包流程文档（不上传）
+打包EXE流程.md
