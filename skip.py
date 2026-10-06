@@ -1,31 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-原神自动跳剧情 + 自动选选项（BetterGI AutoSkip 的 Python 复刻版）
-================================================================
-协作机制照抄 BetterGI AutoSkip：
-  每帧先做【前台检查】→ 原神窗口不在前台则完全不动作（修：剧情结束/切窗后仍狂按的 bug）
-  前台时【定位游戏窗口客户区】→ 只截该区域 → 所有 ROI 按窗口内坐标计算
-  （修：窗口化/分屏时全屏百分比 ROI 全部错位，对话 UI 匹配不到）
-  再模板匹配判定界面状态，按优先级分派：
-    A. 对话界面 + 选项文字出现 → 鼠标点击第一个选项（原项目默认模式：气泡/文字识别 + 鼠标点击）
-    B. 对话界面 + 无选项        → 每 200ms 按一次空格推进台词
-    C. 非对话界面               → 不做任何输入（不影响正常游玩）
+原神自动跳剧情 + 自动选选项。
 
-界面判定（不使用 F 图标！原神任何交互都带 F，用它必误触）：
-  1) 对话判定照抄原项目 Bv.IsInTalkUi：左上角 1/3 × 1/8 区域匹配 disabled_ui.png
-     （原项目资产，非用户自裁模板——用户自裁的"自动按钮"实测非对话误命中 0.9）
-  2) 选项判定照抄原项目 ChatOptionChoose：icon_option.png 模板 + @option ROI(x50~83%,y8~92%)
-     + 多目标 NMS 匹配，每个匹配点 = 一个选项；感叹号资产同 ROI 优先点击
-  3) 暂停关键词链（原项目决策优先级第7层 default_pause_options）：气泡匹配后 OCR 右侧文字，
-     命中内置暂停列表（凯瑟琳/铁匠/阿圆/声望等 NPC 功能菜单）→ 本场景静默不点不空格。
-     原项目正是靠这一层避免误操作凯瑟琳菜单（它不是"认出非剧情"，是"认出凯瑟琳"）。
-  样本验证：选项(2匹配) / 对话(0) / 探索(0) / 凯瑟琳菜单(5匹配+OCR命中"凯瑟琳"→静默)
-
-前台检测照抄原项目 SystemControl.IsGenshinImpactActiveByProcess：
-  GetForegroundWindow → 进程名 ∈ 白名单，未命中回退窗口标题匹配（原神/Genshin/YuanShen/云·原神）
-
-按键注入方式与桌面"原神自动按F.ahk"一致：keybd_event + 硬件扫描码。
-鼠标点击：SetCursorPos + mouse_event（原神前台时接受真实鼠标输入）。
+机制：
+  前台检查 → 定位游戏窗口客户区 → 模板匹配判定界面状态：
+    A. 对话 + 选项 → 鼠标点击第一个选项
+    B. 对话 + 无选项 → 每 200ms 按空格推进台词
+    C. 非对话 → 不做任何输入（不影响正常游玩）
 
 热键：
   F8   开始 / 停止
@@ -35,10 +16,9 @@
 使用：
   python skip.py              正常运行（首次弹 UAC 请点"是"）
   python skip.py --debug      诊断模式：每秒打印匹配度/判定/开关状态
-  python skip.py --selfcheck  自检：用内置样本验证三态判定，不注入任何按键
+  python skip.py --selfcheck  自检：用样本验证三态判定，不注入任何按键
 
-依赖：pip install opencv-python numpy mss keyboard
-打包：pyinstaller --onefile --noconsole --uac-admin --add-data "dialog_flag.png;." skip.py
+依赖：pip install opencv-python numpy mss keyboard rapidocr-onnxruntime Pillow pywebview
 """
 import ctypes
 from ctypes import wintypes
@@ -54,39 +34,37 @@ import numpy as np
 
 # ---------------------------- 配置 ----------------------------
 SPACE_SC = 0x39          # 空格键扫描码（推进对话）
-MIN_INTERVAL = 0.2       # 两次按键的最小间隔（照抄 BetterGI 的 200ms 硬编码）
-TALK_THRESHOLD = 0.80    # 对话判定阈值（原项目 RecognitionObject 默认 0.8；用户实测：对话0.817稳定 / 误判0.703 → 0.8 分割干净）
+MIN_INTERVAL = 0.2       # 两次按键的最小间隔（200ms 限频）
+TALK_THRESHOLD = 0.80    # 对话判定阈值（实测：对话 0.817 稳定 / 误判 0.703，0.8 分割干净）
 POLL_INTERVAL = 0.02     # 截图轮询间隔（50fps）
 HOTKEY_TOGGLE = "f8"     # 开始/停止
 HOTKEY_EXIT = "f9"       # 退出
 
-# 对话判定 ROI（照抄原项目 Bv.IsInTalkUi）：左上角 1/3 × 1/8 区域
+# 对话判定 ROI：左上角 1/3 × 1/8 区域
 TALK_ROI = (0.0, 0.0, 1 / 3, 1 / 8)
 
-# 选项判定（照抄原项目 ChatOptionChoose / Recognition.json）：
+# 选项判定：
 #   OptionIcon = icon_option.png 模板 + @option ROI + 阈值0.75 + 多目标NMS匹配
 #   @option = rect(cw/2, ch/12, cw-cw/2-cw/6, ch-ch/12-10) = x50~83.3%, y8.3~91.7%
 #   每个匹配点 = 一个选项气泡 → 匹配点数 = 选项数
 #   ExclamationIcon = icon_exclamation.png 同 ROI，存在则优先点击
-# 样本验证：选项界面2匹配(最高0.801) / 对话0 / 探索0
 OPTION_ROI = (0.5, 1 / 12, 0.5 + 1 / 3, 1 - 1 / 12)   # (x0,y0,x1,y1) 千分比 = (0.5, 0.083, 0.833, 0.917)
-OPTION_ICON_THRESHOLD = 0.90   # 用户实测调优：新模板真实选项 0.955/0.985，0.9 余量仍充足
+OPTION_ICON_THRESHOLD = 0.90   # 阈值 0.9：实测真实选项 0.955/0.985，误判 <0.8，余量充足
 OPTION_ICON_TEMPLATE = "icon_option.png"
 EXCLAMATION_TEMPLATE = "icon_exclamation.png"
 OPTION_CLICK_COOLDOWN = 0.8    # 点击选项后的冷却（防连点；冷却期内不空格，防止误确认）
 
-# 选项文字关键词决策链（照抄原项目 ChatOptionChoose 优先级第7层 default_pause_options）：
+# 选项文字关键词决策链：
 #   气泡图标匹配到选项后，OCR 识别右侧选项文字；文字命中暂停列表 → 本对话场景整体静默
 #   （不点选项、不按空格），避免误操作 NPC 功能菜单（凯瑟琳/铁匠/尘歌壶阿圆/声望等）。
-# 内置基础列表来自官方文档明确提及的关键词；可编辑 pause_options.json（JSON 字符串数组）追加，
-# 后续可从原项目 exe 目录 \Assets\Config\Skip\default_pause_options.json 抄完整内置列表。
+# 内置列表为基础关键词；可编辑 pause_options.json（JSON 字符串数组）追加。
 DEFAULT_PAUSE_KEYWORDS = ["凯瑟琳", "铁匠", "阿圆", "声望"]
 PAUSE_OPTIONS_FILE = "pause_options.json"
 OCR_ROI = (0.5, 0.08, 1.0, 0.92)      # 选项文字识别区（右侧，与 @option 对齐）
 OCR_COOLDOWN = 3.0                    # 气泡出现后 OCR 一次，3 秒内不重复（RapidOCR 约 0.3~1.2s）
 OCR_PAUSE_DURATION = 30.0             # 命中暂停关键词后静默 30 秒；气泡消失自动解除
 
-TALK_TEMPLATE = "disabled_ui.png"  # 原项目对话界面 UI 资产（左上角），不用用户自裁模板（实测误判）
+TALK_TEMPLATE = "disabled_ui.png"  # 对话界面 UI 资产（左上角）
 BASE_DIR = Path(__file__).resolve().parent
 
 # ---------------------------- 管理员权限（UAC 提权） ----------------------------
@@ -118,7 +96,7 @@ def ensure_admin() -> bool:
     return False
 
 
-# ---------------------------- 前台检测（照抄 BetterGI IsGenshinImpactActiveByProcess） ----------------------------
+# ---------------------------- 前台检测 ----------------------------
 GAME_PROCESS_NAMES = {"yuanshen", "genshinimpact", "genshin impact cloud game", "genshin impact cloud"}
 GAME_TITLE_KEYWORDS = ("原神", "genshin", "yuanshen", "云·原神")
 
@@ -234,7 +212,7 @@ def click_abs(x: int, y: int):
 class TemplateMatcher:
     """多尺度模板匹配：模板是小图标，游戏窗口分辨率变化时图标大小会变，
     因此把模板按多种尺度放大/缩小后逐一匹配，取最高置信度。
-    支持 ROI 限定（照抄原项目 Bv.IsInTalkUi：只匹配左上角区域，避免全局误匹配）。"""
+    支持 ROI 限定：只匹配左上角区域，避免全局误匹配。"""
 
     def __init__(self, template_path: Path, threshold: float):
         tpl = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
@@ -284,7 +262,7 @@ def _iou(x1, y1, w1, h1, x2, y2, w2, h2) -> float:
 
 
 class IconMultiMatcher:
-    """原项目 FindMulti 的 Python 复刻：模板多尺度匹配 + 阈值 + NMS 多目标。
+    """模板匹配 + 阈值 + NMS 多目标。
     返回所有匹配点（每个 = 一个选项气泡），按 Y 升序排列。"""
 
     def __init__(self, template_path: Path, threshold: float):
@@ -304,14 +282,14 @@ class IconMultiMatcher:
 
     def find(self, frame_bgr, roi: Tuple[float, float, float, float]):
         """在 ROI（千分比）内找所有匹配点，返回 [(x, y, w, h, score), ...]（窗口内坐标，按 Y 升序）。
-        单尺度匹配：模板按当前帧高度 /1080 缩放（原项目 AssetScale），不扫多尺度——
+        单尺度匹配：模板按当前帧高度 /1080 缩放，不扫多尺度——
         多尺度会在同一图标的多档缩放上重复命中（实测剧情选项 11 点、凯瑟琳 35 点），
         单尺度每个图标恰好一个匹配点，匹配点数 = 选项数，且消除误匹配源。"""
         h, w = frame_bgr.shape[:2]
         x0, y0 = int(w * roi[0]), int(h * roi[1])
         x1, y1 = int(w * roi[2]), int(h * roi[3])
         gray = cv2.cvtColor(frame_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-        scale = h / 1080.0  # 原项目 AssetScale（按窗口高度）
+        scale = h / 1080.0  # 按窗口高度缩放
         t = self._scaled(scale)
         th, tw = t.shape[:2]
         if tw <= gray.shape[1] and th <= gray.shape[0]:
@@ -322,7 +300,7 @@ class IconMultiMatcher:
             hits = []
         if not hits:
             return []
-        # NMS：分数降序，抑制 IoU>=0.5 的邻近候选（照抄原项目 SuppressOverlappingCandidates）。
+        # NMS：分数降序，抑制 IoU>=0.5 的邻近候选。
         # 注意：hits 坐标是 ROI 内坐标，NMS 必须在同一坐标系比较，最后再统一加 ROI 偏移。
         hits.sort(key=lambda r: -r[4])
         kept = []
@@ -336,7 +314,7 @@ class IconMultiMatcher:
 
 
 def detect_option(frame_bgr, option_matcher=None, excl_matcher=None):
-    """检测选项（照抄原项目 ChatOptionChoose）：
+    """检测选项：
     1) 感叹号图标存在 → 优先（返回 (True, 'exclamation', 匹配点)）
     2) 选项气泡图标多目标匹配 → 每个匹配点 = 一个选项（返回 (True, 'option', 匹配点列表)）
     3) 都没有 → (False, None, [])
