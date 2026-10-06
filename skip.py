@@ -32,6 +32,24 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+
+# OpenCV imread/imwrite 在 Windows 下不支持中文路径（内部用 ANSI fopen），
+# 打包后 exe 目录含中文（如 _internal），必须用 fromfile/imdecode 与 imencode/tofile 替代。
+def _imread_gray(path):
+    return cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+
+def _imread_color(path):
+    return cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+
+
+def _imwrite(path, img):
+    suffix = "." + str(path).rsplit(".", 1)[-1].lower()
+    ok, buf = cv2.imencode(suffix, img)
+    if ok:
+        buf.tofile(str(path))
+
+
 # ---------------------------- 配置 ----------------------------
 SPACE_SC = 0x39          # 空格键扫描码（推进对话）
 MIN_INTERVAL = 0.2       # 两次按键的最小间隔（200ms 限频）
@@ -218,7 +236,7 @@ class TemplateMatcher:
     支持 ROI 限定：只匹配左上角区域，避免全局误匹配。"""
 
     def __init__(self, template_path: Path, threshold: float):
-        tpl = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+        tpl = _imread_gray(template_path)
         if tpl is None:
             raise FileNotFoundError(f"找不到模板文件: {template_path}")
         self.tpl = tpl
@@ -269,7 +287,7 @@ class IconMultiMatcher:
     返回所有匹配点（每个 = 一个选项气泡），按 Y 升序排列。"""
 
     def __init__(self, template_path: Path, threshold: float):
-        tpl = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+        tpl = _imread_gray(template_path)
         if tpl is None:
             raise FileNotFoundError(f"找不到模板文件: {template_path}")
         self.tpl = tpl
@@ -634,7 +652,7 @@ class DialogSkipper:
                         anno = frame.copy()
                         for m in matches:
                             cv2.rectangle(anno, (m[0], m[1]), (m[0] + m[2], m[1] + m[3]), (0, 255, 0), 2)
-                        cv2.imwrite(str(DATA_DIR / "data" / "diag" / f"opt_{int(time.time())}.png"), anno)
+                        _imwrite(DATA_DIR / "data" / "diag" / f"opt_{int(time.time())}.png", anno)
                     except Exception:
                         pass
 
@@ -674,7 +692,7 @@ def selfcheck():
     excl_matcher = IconMultiMatcher(RES_DIR / "assets" / EXCLAMATION_TEMPLATE, OPTION_ICON_THRESHOLD)
     sk = DialogSkipper()
     for name, path, expect in samples:
-        img = cv2.imread(str(path))
+        img = _imread_color(path)
         if img is None:
             print(f"{name}: 样本读取失败 {path} → ✗")
             ok = False
