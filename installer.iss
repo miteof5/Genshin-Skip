@@ -3,7 +3,7 @@
 
 #define MyAppName "原神跳一跳"
 #define MyAppExeName "Genshin-Skip.exe"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "miteof5"
 
 [Setup]
@@ -34,8 +34,6 @@ Name: "desktopicon"; Description: "创建桌面快捷方式(&D)"; GroupDescripti
 [Files]
 Source: "dist\Genshin-Skip\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\Genshin-Skip\_internal\*"; DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "data\pause_options.json"; DestDir: "{app}\data"; Flags: ignoreversion
-Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

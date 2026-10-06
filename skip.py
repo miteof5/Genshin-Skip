@@ -18,7 +18,7 @@
   python skip.py --debug      诊断模式：每秒打印匹配度/判定/开关状态
   python skip.py --selfcheck  自检：用样本验证三态判定，不注入任何按键
 
-依赖：pip install opencv-python numpy mss keyboard rapidocr-onnxruntime Pillow pywebview
+依赖：pip install opencv-python numpy mss keyboard Pillow pywebview
 """
 import ctypes
 from ctypes import wintypes
@@ -72,19 +72,9 @@ OPTION_ICON_TEMPLATE = "icon_option.png"
 EXCLAMATION_TEMPLATE = "icon_exclamation.png"
 OPTION_CLICK_COOLDOWN = 0.8    # 点击选项后的冷却（防连点；冷却期内不空格，防止误确认）
 
-# 选项文字关键词决策链：
-#   气泡图标匹配到选项后，OCR 识别右侧选项文字；文字命中暂停列表 → 本对话场景整体静默
-#   （不点选项、不按空格），避免误操作 NPC 功能菜单（凯瑟琳/铁匠/尘歌壶阿圆/声望等）。
-# 内置列表为基础关键词；可编辑 pause_options.json（JSON 字符串数组）追加。
-DEFAULT_PAUSE_KEYWORDS = ["凯瑟琳", "铁匠", "阿圆", "声望"]
-PAUSE_OPTIONS_FILE = "pause_options.json"
-OCR_ROI = (0.5, 0.08, 1.0, 0.92)      # 选项文字识别区（右侧，与 @option 对齐）
-OCR_COOLDOWN = 3.0                    # 气泡出现后 OCR 一次，3 秒内不重复（RapidOCR 约 0.3~1.2s）
-OCR_PAUSE_DURATION = 30.0             # 命中暂停关键词后静默 30 秒；气泡消失自动解除
-
 TALK_TEMPLATE = "disabled_ui.png"  # 对话界面 UI 资产（左上角）
 # 打包后 _MEIPASS = 解压内部目录（内置资源：ui.html / assets 模板）
-# DATA_DIR = 可执行文件所在目录（外置数据：data\ 暂停词与日志、samples\ 自检截图）
+# DATA_DIR = 可执行文件所在目录（外置数据：data\ 日志、samples\ 自检截图）
 RES_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 DATA_DIR = Path(__file__).resolve().parent
 
@@ -362,43 +352,6 @@ class DialogSkipper:
         self._thread = None
         self.last_press = 0.0
         self.last_option_click = 0.0
-        self.ocr_engine = None       # RapidOCR 懒加载
-        self._pauses = None          # 暂停关键词缓存
-        self.ocr_cooldown_until = 0.0
-        self.pause_until = 0.0
-
-    def _pause_keywords(self):
-        """内置暂停关键词 + 脚本目录 pause_options.json 追加（用户可编辑）"""
-        if self._pauses is None:
-            kws = list(DEFAULT_PAUSE_KEYWORDS)
-            try:
-                p = DATA_DIR / "data" / PAUSE_OPTIONS_FILE
-                if p.exists():
-                    extra = json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(extra, list):
-                        kws += [str(x) for x in extra if x]
-            except Exception:
-                pass
-            self._pauses = kws
-        return self._pauses
-
-    def _ocr_texts(self, frame):
-        """OCR 选项文字区，返回文字列表。无 RapidOCR 依赖时返回空（退化为直接点第一个）。"""
-        if self.ocr_engine is None:
-            try:
-                from rapidocr_onnxruntime import RapidOCR
-                self.ocr_engine = RapidOCR()
-            except Exception:
-                return []
-        h, w = frame.shape[:2]
-        x0, y0 = int(w * OCR_ROI[0]), int(h * OCR_ROI[1])
-        x1, y1 = int(w * OCR_ROI[2]), int(h * OCR_ROI[3])
-        try:
-            res, _ = self.ocr_engine(frame[y0:y1, x0:x1])
-            texts = [t for _, t, _ in (res or [])]
-            return texts
-        except Exception:
-            return []
 
     def toggle(self):
         self.running = not self.running
@@ -529,8 +482,7 @@ class DialogSkipper:
         keyboard.add_hotkey(HOTKEY_TOGGLE, self.toggle)
         keyboard.add_hotkey(HOTKEY_EXIT, self.stop)
         print(f"原神跳一跳已就绪（F8 开关 / F9 退出 / 置顶控制窗）\n"
-              f"对话阈值 {self.talk.threshold:.2f}，选项图标阈值 {OPTION_ICON_THRESHOLD}，按键间隔 {MIN_INTERVAL*1000:.0f}ms，"
-              f"暂停关键词 {len(self._pause_keywords())} 条")
+              f"对话阈值 {self.talk.threshold:.2f}，选项图标阈值 {OPTION_ICON_THRESHOLD}，按键间隔 {MIN_INTERVAL*1000:.0f}ms")
 
         # 检测主循环 → 后台线程；主线程跑 pywebview UI 事件循环（阻塞直到窗口关闭）
         import threading
@@ -601,24 +553,9 @@ class DialogSkipper:
                 now = time.time()
 
                 if has_opt:
-                    # 有选项：OCR 检查是否命中暂停关键词（凯瑟琳/铁匠/阿圆/声望等 NPC 功能菜单）
-                    if now >= self.ocr_cooldown_until:
-                        texts = self._ocr_texts(frame)
-                        self.ocr_cooldown_until = now + OCR_COOLDOWN
-                        paused = any(
-                            any(k in t for k in self._pause_keywords()) for t in texts)
-                        if paused:
-                            self.pause_until = now + OCR_PAUSE_DURATION
-                            if debug:
-                                print(f"[debug] {time.strftime('%H:%M:%S')} 选项文字命中暂停关键词"
-                                      f"（OCR: {texts[:3]}…）→ 本场景静默，不点不空格")
-                        else:
-                            self.pause_until = 0
-                    # 静默期内：不点选项也不按空格（NPC 功能菜单）
-                    if now < self.pause_until:
-                        pass
-                    # 非静默：感叹号优先点感叹号；气泡则点第一个（最上面）气泡
-                    elif now - self.last_option_click >= OPTION_CLICK_COOLDOWN:
+                    # 检测到选项气泡 → 自动点第一个（感叹号优先，气泡其次）。
+                    # 不区分剧情选项 / NPC 功能菜单：一刀切，符合条件即点击。
+                    if now - self.last_option_click >= OPTION_CLICK_COOLDOWN:
                         m = matches[0]  # Y 升序 → 第一个 = 最上面
                         if opt_type == "option":
                             # 点击选项行中部偏前：图标右缘 + 2% 窗口宽（进入文字区前部）。
@@ -634,9 +571,6 @@ class DialogSkipper:
                             print(f"[debug] {time.strftime('%H:%M:%S')} 检测到选项({opt_type},{len(matches)}个) "
                                   f"→ 点击第一个 ({cx + rect[0]},{cy + rect[1]}) 分数={m[4]:.3f}")
                 else:
-                    # 气泡消失 → 场景已变，解除暂停静默
-                    if now < self.pause_until:
-                        self.pause_until = 0
                     # 对话文本：空格推进（200ms 限频）
                     if now - self.last_option_click >= OPTION_CLICK_COOLDOWN and now - self.last_press >= MIN_INTERVAL:
                         tap_key(SPACE_SC)
@@ -669,28 +603,25 @@ class DialogSkipper:
 
 # ---------------------------- 自检模式（不注入按键） ----------------------------
 def selfcheck():
-    """用真实截图验证判定 + OCR 暂停关键词决策链。样本放在项目 samples\ 目录（4 张 1280x720 全屏截图）"""
+    """用真实截图验证判定：对话/选项/非对话。样本放在项目 samples\ 目录（3 张 1280x720 全屏截图）"""
     samples_dir = DATA_DIR / "samples"
     samples = [
         ("选项界面(应→点选项)", samples_dir / "option.png", "OPTION"),
         ("对话无选项(应→空格)", samples_dir / "talk.png", "TALK"),
         ("非对话(应→无动作)", samples_dir / "normal.png", "NORMAL"),
-        ("凯瑟琳菜单(应→静默)", samples_dir / "pause.png", "PAUSE"),
     ]
     missing = [p for _, p, _ in samples if not p.exists()]
     if missing:
-        print("自检样本缺失（samples\\ 目录下没有对应截图），请准备 4 张 1280x720 原神全屏截图放入 samples\\：")
+        print("自检样本缺失（samples\\ 目录下没有对应截图），请准备 3 张 1280x720 原神全屏截图放入 samples\\：")
         print("  talk.png    对话进行中（无选项气泡，左上角有「自动」按钮）")
         print("  option.png  对话选项界面（有选项气泡）")
         print("  normal.png  非对话（大世界/菜单，无对话框）")
-        print("  pause.png   凯瑟琳每日委托奖励界面（多选项菜单）")
         print("放好后重新运行 --selfcheck")
         return 1
     talk = TemplateMatcher(RES_DIR / "assets" / TALK_TEMPLATE, TALK_THRESHOLD)
     ok = True
     opt_matcher = IconMultiMatcher(RES_DIR / "assets" / OPTION_ICON_TEMPLATE, OPTION_ICON_THRESHOLD)
     excl_matcher = IconMultiMatcher(RES_DIR / "assets" / EXCLAMATION_TEMPLATE, OPTION_ICON_THRESHOLD)
-    sk = DialogSkipper()
     for name, path, expect in samples:
         img = _imread_color(path)
         if img is None:
@@ -699,18 +630,11 @@ def selfcheck():
             continue
         is_talk, tv = talk.detect(img, TALK_ROI)
         has_opt, opt_type, matches = detect_option(img, opt_matcher, excl_matcher) if is_talk else (False, None, [])
-        paused = False
-        if is_talk and has_opt:
-            texts = sk._ocr_texts(img)
-            paused = any(any(k in t for k in sk._pause_keywords()) for t in texts)
-        if expect == "PAUSE":
-            state = "PAUSE" if paused else "OPTION"
-        else:
-            state = "OPTION" if (is_talk and has_opt and not paused) else ("TALK" if is_talk else "NORMAL")
+        state = "OPTION" if (is_talk and has_opt) else ("TALK" if is_talk else "NORMAL")
         hit = (state == expect)
         ok = ok and hit
         print(f"{name}: 自动={tv:.3f} 选项={'有' if has_opt else '无'}({opt_type or '-'},{len(matches)}) "
-              f"{'暂停=命中' if paused else '暂停=无'} 判定={state} {'✓' if hit else '✗ 与预期不符'}")
+              f"判定={state} {'✓' if hit else '✗ 与预期不符'}")
     print("自检" + ("通过 ✓" if ok else "未通过 ✗ 请检查阈值"))
     return 0 if ok else 1
 
