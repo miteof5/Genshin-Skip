@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>原神跳一跳</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  /* 深色圆角面板：窗口背景 #1b1e24 不透明，四角由 Python 侧 SetWindowRgn 裁圆（14px），
+     .card 的 border-radius:14px 与之重合 → 面板边缘描边沿圆角走。不再需要键色透明 */
+  html, body { background: #1b1e24; }
+  body {
+    font-family: "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    position: relative;
+    width: 100%;
+    height: 101px;
+    border-radius: 11px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 12px 14px 10px;
+  }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 22px;
+    margin-bottom: 8px;
+    font-size: 0;
+  }
+  .title { font-size: 12px; font-weight: 600; color: #f2f3f5; letter-spacing: 0.01em; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 8px;
+    color: #9aa0a6;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 999px;
+    padding: 2px 5px;
+    white-space: nowrap;
+  }
+  .close-btn {
+    position: absolute;
+    top: 10px; right: 10px;
+    width: 16px; height: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(242, 243, 245, 0.65);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease;
+  }
+  .close-btn:hover { background: rgba(255, 82, 82, 0.85); color: #fff; }
+  .close-btn:active { transform: scale(0.92); }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    transition: background 0.25s ease;
+  }
+  .toggle-row.on { background: rgba(48, 209, 88, 0.08); }
+  .switch-label { flex: 1; min-width: 0; }
+  .switch-label .name { font-size: 12px; font-weight: 500; color: #f2f3f5; white-space: nowrap; }
+
+  .toggle { position: relative; width: 40px; height: 24px; flex: none; }
+  .toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 2; }
+  .track {
+    position: absolute; inset: 0;
+    border-radius: 999px;
+    background: #3a3f46;
+    transition: background 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.35);
+  }
+  .thumb {
+    position: absolute; top: 3px; left: 3px;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+    transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .toggle input:checked + .track { background: linear-gradient(180deg, #37d96b, #22a44e); }
+  .toggle input:checked + .track + .thumb { transform: translateX(16px); }
+  .toggle input:active + .track + .thumb { transform: scale(0.92); }
+  .toggle input:checked:active + .track + .thumb { transform: translateX(16px) scale(0.92); }
+
+  .status {
+    font-size: 10px;
+    font-weight: 500;
+    color: #9aa0a6;
+    min-width: 36px;
+    text-align: right;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    transition: color 0.25s ease;
+  }
+  .status .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #9aa0a6;
+    transition: background 0.25s ease, box-shadow 0.25s ease;
+  }
+  .status.on { color: #30d158; }
+  .status.on .dot { background: #30d158; box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.15); }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="card-head">
+    <span class="title">原神跳一跳</span>
+    <span class="badge">快捷键 F8 开 / 关</span>
+  </div>
+  <span class="close-btn" id="closeBtn" title="退出">×</span>
+
+  <div class="toggle-row" id="toggleRow">
+    <label class="switch-label">
+      <div class="name">自动跳过</div>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="master">
+      <span class="track"></span>
+      <span class="thumb"></span>
+    </label>
+    <span class="status" id="status"><span class="dot"></span><span id="statusText">已暂停</span></span>
+  </div>
+</div>
+
+<script>
+  var input = document.getElementById('master');
+  var row = document.getElementById('toggleRow');
+  var statusEl = document.getElementById('status');
+  var statusText = document.getElementById('statusText');
+
+  function setState(on) {
+    if (input.checked !== on) input.checked = on;
+    row.className = 'toggle-row' + (on ? ' on' : '');
+    statusEl.className = 'status' + (on ? ' on' : '');
+    statusText.textContent = on ? '运行中' : '已暂停';
+  }
+
+  input.addEventListener('change', function () {
+    setState(input.checked);
+    if (window.pywebview && window.pywebview.api) {
+      window.pywebview.api.toggle();
+    }
+  });
+
+  document.getElementById('closeBtn').addEventListener('click', function () {
+    if (window.pywebview && window.pywebview.api) {
+      window.pywebview.api.close();
+    }
+  });
+
+  // 拖拽移动窗口（开关/关闭按钮除外）
+  var drag = null;
+  document.addEventListener('mousedown', function (e) {
+    if (e.target.closest('.toggle') || e.target.closest('.close-btn')) return;
+    drag = { x: e.screenX, y: e.screenY };
+  });
+  document.addEventListener('mousemove', function (e) {
+    if (drag && window.pywebview && window.pywebview.api) {
+      var dx = e.screenX - drag.x, dy = e.screenY - drag.y;
+      drag = { x: e.screenX, y: e.screenY };
+      window.pywebview.api.drag(dx, dy);
+    }
+  });
+  document.addEventListener('mouseup', function () { drag = null; });
+
+  // 初始化：向 Python 要当前状态
+  if (window.pywebview && window.pywebview.api) {
+    window.pywebview.api.get_state().then(function (v) { setState(v === true || v === 'true'); });
+  }
+</script>
+</body>
+</html>

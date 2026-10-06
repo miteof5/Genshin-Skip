@@ -1,0 +1,18 @@
+# 运行时数据（含游戏截图与本地路径，隐私，不推送）
+data/diag/
+data/skip_debug.log
+
+# 自检截图（用户游戏画面，不推送）
+samples/
+
+# Python 缓存与打包产物
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# 本地临时文件
+*.tmp
+*_test.log
+*_test_err.log
